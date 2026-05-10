@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 # =========================================================
 
 st.set_page_config(
-    page_title="BTC Probabilístico Calibrado",
+    page_title="BTC Detector Real de Entradas",
     layout="wide"
 )
 
@@ -41,16 +41,19 @@ if not st.session_state.logado:
 # TÍTULO
 # =========================================================
 
-st.title("₿ BTC Probabilístico Calibrado (FUNCIONAL)")
+st.title("₿ BTC Detector Real de Entradas (Regime + Breakout)")
 
 st.markdown("""
-Modelo ajustado para:
+Este modelo detecta **entradas reais do BTC diário**, baseado em:
 
-✔ detectar setups reais do BTC  
-✔ evitar excesso de filtro  
-✔ usar score normalizado  
-✔ capturar continuação e reversão  
-✔ foco em +3%
+✔ regime de tendência  
+✔ compressão de volatilidade  
+✔ expansão (impulso real)  
+✔ breakout de estrutura  
+✔ probabilidade de +3%  
+
+❌ não usa 1-2-3  
+❌ não usa pivô rígido  
 """)
 
 # =========================================================
@@ -88,85 +91,82 @@ df = load_data(anos)
 
 df["EMA69"] = df["Close"].ewm(span=69, adjust=False).mean()
 
-df["RET"] = df["Close"].pct_change()
-
-df["VOL"] = df["RET"].rolling(14).std()
-
 df["ATR"] = (df["High"] - df["Low"]).rolling(14).mean()
 
+df["VOL"] = df["Close"].pct_change().rolling(14).std()
+
 # =========================================================
-# FUNÇÕES DE CONTEXTO
+# REGIME DE TENDÊNCIA
 # =========================================================
 
-def trend(i):
+def is_trend(i):
+
     if i < 70:
         return False
+
     return df["Close"].iloc[i] > df["EMA69"].iloc[i]
 
-def slope(i):
-    return df["EMA69"].iloc[i] - df["EMA69"].iloc[i-5]
+# =========================================================
+# COMPRESSÃO DE MERCADO
+# =========================================================
 
-def expansion(i):
+def is_compression(i):
 
-    high = df["High"].iloc[i-lookback:i].max()
-    low = df["Low"].iloc[i-lookback:i].min()
+    atr_now = df["ATR"].iloc[i]
+    atr_mean = df["ATR"].iloc[i-lookback:i].mean()
 
-    return (high - low) / low
+    if pd.isna(atr_now) or pd.isna(atr_mean):
+        return False
 
-def pullback(i):
+    return atr_now < atr_mean * 0.8
 
-    high = df["High"].iloc[i-lookback:i].max()
+# =========================================================
+# EXPANSÃO (IMPULSO REAL)
+# =========================================================
 
-    return (high - df["Low"].iloc[i]) / high
+def is_expansion(i):
+
+    recent_high = df["High"].iloc[i-lookback:i].max()
+    recent_low = df["Low"].iloc[i-lookback:i].min()
+
+    move = (recent_high - recent_low) / recent_low
+
+    return move > 0.03
+
+# =========================================================
+# BREAKOUT REAL
+# =========================================================
 
 def breakout(i):
 
-    recent_high = df["High"].iloc[i-lookback:i].max()
+    resistance = df["High"].iloc[i-lookback:i].max()
 
-    return df["High"].iloc[i] >= recent_high * 0.995
+    return df["High"].iloc[i] >= resistance * 0.995
 
 # =========================================================
-# SCORE NORMALIZADO (0–100)
+# SCORE DE ENTRADA REAL
 # =========================================================
 
-def score(i):
+def entry_score(i):
 
-    s = 0
+    score = 0
 
-    # tendência
-    if trend(i):
-        s += 35
+    if is_trend(i):
+        score += 40
 
-    # inclinação EMA
-    if slope(i) > 0:
-        s += 15
+    if is_compression(i):
+        score += 20
 
-    # expansão
-    exp = expansion(i)
-    if exp > 0.05:
-        s += 20
-    elif exp > 0.03:
-        s += 12
-    elif exp > 0.015:
-        s += 6
+    if is_expansion(i):
+        score += 20
 
-    # pullback saudável
-    pb = pullback(i)
-    if pb < 0.2:
-        s += 20
-    elif pb < 0.35:
-        s += 12
-    elif pb < 0.5:
-        s += 6
-
-    # breakout leve (wick incluído)
     if breakout(i):
-        s += 10
+        score += 20
 
-    return s
+    return score
 
 # =========================================================
-# DETECÇÃO
+# DETECÇÃO DE ENTRADAS
 # =========================================================
 
 resultados = []
@@ -175,13 +175,10 @@ for i in range(lookback, len(df)-5):
 
     try:
 
-        sc = score(i)
+        sc = entry_score(i)
 
-        # =====================================================
-        # CALIBRAÇÃO (IMPORTANTE)
-        # =====================================================
-
-        if sc < 35:
+        # filtro calibrado (não bloqueia tudo)
+        if sc < 50:
             continue
 
         entry = df["Close"].iloc[i]
@@ -223,7 +220,7 @@ for i in range(lookback, len(df)-5):
 res = pd.DataFrame(resultados)
 
 if len(res) == 0:
-    st.warning("Nenhum setup detectado (ainda).")
+    st.warning("Nenhuma entrada real detectada ainda.")
     st.stop()
 
 # =========================================================
@@ -241,7 +238,7 @@ dias_medios = res[res["Gain"] == True]["Dias"].mean()
 # DASHBOARD
 # =========================================================
 
-st.header("📊 Estatísticas BTC")
+st.header("📊 Entradas Reais BTC")
 
 c1,c2,c3 = st.columns(3)
 
@@ -273,7 +270,7 @@ st.plotly_chart(fig, use_container_width=True)
 # TABELA
 # =========================================================
 
-st.header("📋 Setups detectados")
+st.header("📋 Entradas detectadas")
 
 st.dataframe(res.sort_values("Score", ascending=False), use_container_width=True)
 
@@ -284,11 +281,12 @@ st.dataframe(res.sort_values("Score", ascending=False), use_container_width=True
 st.header("📘 Leitura do Modelo")
 
 st.write(f"""
-Modelo calibrado com score probabilístico.
+Este modelo detecta entradas reais do BTC baseadas em:
 
-- não usa sequência fixa
-- detecta contexto de tendência
-- captura pullbacks e rompimentos leves
+- tendência (EMA69)
+- compressão de volatilidade
+- expansão (impulso)
+- breakout de estrutura
 
 Taxa histórica: {taxa:.2f}%
 """)
