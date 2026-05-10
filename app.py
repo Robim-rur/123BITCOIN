@@ -49,15 +49,15 @@ if not st.session_state.logado:
 st.title("₿ Bitcoin 1-2-3 Probabilístico")
 
 st.markdown("""
-Este aplicativo detecta automaticamente padrões **1-2-3 de compra**
-no gráfico diário do Bitcoin e calcula:
+Detector estrutural de pivô 1-2-3 no gráfico diário do Bitcoin.
 
-- probabilidade histórica de atingir gain;
-- tempo médio até o alvo;
-- drawdown antes do gain;
+O sistema calcula:
+
+- probabilidade histórica;
+- tempo médio até o gain;
+- drawdown histórico;
 - score probabilístico;
-- similaridade histórica;
-- qualidade da formação.
+- qualidade estrutural do pivô.
 """)
 
 # =========================================================
@@ -92,11 +92,11 @@ with col3:
     )
 
 with col4:
-    score_min = st.slider(
-        "Score mínimo",
-        min_value=0,
-        max_value=100,
-        value=70
+    pivots = st.slider(
+        "Força do pivô",
+        min_value=2,
+        max_value=10,
+        value=3
     )
 
 # =========================================================
@@ -140,12 +140,22 @@ def calculate_dmi(data, period=14):
     tr2 = abs(high - close.shift())
     tr3 = abs(low - close.shift())
 
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    tr = pd.concat(
+        [tr1, tr2, tr3],
+        axis=1
+    ).max(axis=1)
 
     atr = tr.rolling(period).mean()
 
-    plus_di = 100 * (plus_dm.rolling(period).mean() / atr)
-    minus_di = 100 * (minus_dm.rolling(period).mean() / atr)
+    plus_di = (
+        100 *
+        (plus_dm.rolling(period).mean() / atr)
+    )
+
+    minus_di = (
+        100 *
+        (minus_dm.rolling(period).mean() / atr)
+    )
 
     dx = (
         abs(plus_di - minus_di)
@@ -185,139 +195,218 @@ df['ADX'] = adx
 df['ATR'] = atr(df)
 
 # =========================================================
-# DETECÇÃO 1-2-3
+# SWINGS REAIS
+# =========================================================
+
+def swing_low(df, i, n=3):
+
+    return (
+        df['Low'].iloc[i]
+        == min(df['Low'].iloc[i-n:i+n+1])
+    )
+
+def swing_high(df, i, n=3):
+
+    return (
+        df['High'].iloc[i]
+        == max(df['High'].iloc[i-n:i+n+1])
+    )
+
+# =========================================================
+# DETECÇÃO PIVÔ 1-2-3
 # =========================================================
 
 resultados = []
 
-for i in range(30, len(df) - 30):
+for i in range(30, len(df)-30):
 
     try:
 
-        c1 = df.iloc[i - 2]
-        c2 = df.iloc[i - 1]
-        c3 = df.iloc[i]
-
         # =========================================
-        # ESTRUTURA 1-2-3
+        # PROCURA PONTO 1
         # =========================================
 
-        fundo1 = c1['Low']
-        topo2 = c2['High']
-        fundo3 = c3['Low']
+        if not swing_low(df, i, pivots):
+            continue
 
-        estrutura_valida = (
-            fundo3 > fundo1
-        )
+        p1_idx = i
+        p1 = df.iloc[p1_idx]
 
-        rompimento = (
-            df.iloc[i + 1]['Close'] > topo2
-        )
+        # =========================================
+        # PROCURA PONTO 2
+        # =========================================
 
-        tendencia = (
-            c3['Close'] > c3['EMA69']
-        )
+        p2_idx = None
 
-        dmi_ok = (
-            c3['DI+'] > c3['DI-']
-        )
-
-        adx_ok = (
-            c3['ADX'] > adx_min
-        )
-
-        if (
-            estrutura_valida
-            and rompimento
-            and tendencia
-            and dmi_ok
-            and adx_ok
+        for j in range(
+            p1_idx + 1,
+            p1_idx + 15
         ):
 
-            entrada = df.iloc[i + 1]['Close']
+            if swing_high(df, j, pivots):
 
-            alvo_preco = entrada * (
-                1 + alvo / 100
-            )
+                p2_idx = j
+                break
 
-            # =========================================
-            # MÉTRICAS DO PADRÃO
-            # =========================================
+        if p2_idx is None:
+            continue
 
-            candle_range = (
-                (c3['High'] - c3['Low'])
-                / c3['Close']
-            ) * 100
+        p2 = df.iloc[p2_idx]
 
-            distancia_ema = (
-                (c3['Close'] - c3['EMA69'])
-                / c3['EMA69']
-            ) * 100
+        # =========================================
+        # PROCURA PONTO 3
+        # =========================================
 
-            atr_perc = (
-                c3['ATR']
-                / c3['Close']
-            ) * 100
+        p3_idx = None
 
-            score = 0
+        for k in range(
+            p2_idx + 1,
+            p2_idx + 15
+        ):
 
-            # =========================================
-            # SCORE
-            # =========================================
+            if swing_low(df, k, pivots):
 
-            if candle_range > 2:
-                score += 20
+                if (
+                    df.iloc[k]['Low']
+                    > p1['Low']
+                ):
 
-            if distancia_ema < 8:
-                score += 20
-
-            if c3['ADX'] > 25:
-                score += 20
-
-            if c3['DI+'] > c3['DI-']:
-                score += 20
-
-            if atr_perc < 5:
-                score += 20
-
-            # =========================================
-            # BACKTEST
-            # =========================================
-
-            gain = False
-            dias = 0
-            pior_dd = 0
-
-            for j in range(i + 2, len(df)):
-
-                preco = df.iloc[j]['Close']
-
-                dd = (
-                    (preco / entrada) - 1
-                ) * 100
-
-                if dd < pior_dd:
-                    pior_dd = dd
-
-                dias += 1
-
-                if preco >= alvo_preco:
-
-                    gain = True
-
+                    p3_idx = k
                     break
 
-            resultados.append({
-                'Data': df.index[i],
-                'Entrada': round(entrada, 2),
-                'Score': score,
-                'Gain': gain,
-                'Dias': dias,
-                'Pior_DD_%': round(pior_dd, 2),
-                'ADX': round(c3['ADX'], 2),
-                'ATR_%': round(atr_perc, 2),
-                'Dist_EMA_%': round(distancia_ema, 2)
-            })
+        if p3_idx is None:
+            continue
+
+        p3 = df.iloc[p3_idx]
+
+        # =========================================
+        # ROMPIMENTO
+        # =========================================
+
+        rompimento_idx = None
+
+        for r in range(
+            p3_idx + 1,
+            min(p3_idx + 15, len(df))
+        ):
+
+            if (
+                df.iloc[r]['High']
+                > p2['High']
+            ):
+
+                rompimento_idx = r
+                break
+
+        if rompimento_idx is None:
+            continue
+
+        entrada = df.iloc[rompimento_idx]['Close']
+
+        # =========================================
+        # FILTROS
+        # =========================================
+
+        if entrada < p3['EMA69']:
+            continue
+
+        if p3['DI+'] < p3['DI-']:
+            continue
+
+        if p3['ADX'] < adx_min:
+            continue
+
+        # =========================================
+        # SCORE
+        # =========================================
+
+        score = 0
+
+        # candle força
+        candle_range = (
+            (p3['High'] - p3['Low'])
+            / p3['Close']
+        ) * 100
+
+        if candle_range > 2:
+            score += 20
+
+        # distância EMA
+        dist_ema = (
+            (p3['Close'] - p3['EMA69'])
+            / p3['EMA69']
+        ) * 100
+
+        if dist_ema < 8:
+            score += 20
+
+        # adx
+        if p3['ADX'] > 25:
+            score += 20
+
+        # dmi
+        if p3['DI+'] > p3['DI-']:
+            score += 20
+
+        # atr
+        atr_perc = (
+            p3['ATR']
+            / p3['Close']
+        ) * 100
+
+        if atr_perc < 5:
+            score += 20
+
+        # =========================================
+        # BACKTEST
+        # =========================================
+
+        alvo_preco = (
+            entrada *
+            (1 + alvo/100)
+        )
+
+        gain = False
+        dias = 0
+        pior_dd = 0
+
+        for z in range(
+            rompimento_idx + 1,
+            len(df)
+        ):
+
+            preco = df.iloc[z]['Close']
+
+            dd = (
+                (preco / entrada) - 1
+            ) * 100
+
+            if dd < pior_dd:
+                pior_dd = dd
+
+            dias += 1
+
+            if preco >= alvo_preco:
+
+                gain = True
+                break
+
+        resultados.append({
+
+            'Data': df.index[rompimento_idx],
+            'Entrada': round(entrada, 2),
+            'P1': round(p1['Low'], 2),
+            'P2': round(p2['High'], 2),
+            'P3': round(p3['Low'], 2),
+            'Score': score,
+            'Gain': gain,
+            'Dias': dias,
+            'Pior_DD_%': round(pior_dd, 2),
+            'ADX': round(p3['ADX'], 2),
+            'ATR_%': round(atr_perc, 2),
+            'Dist_EMA_%': round(dist_ema, 2)
+
+        })
 
     except:
         pass
@@ -330,22 +419,8 @@ res = pd.DataFrame(resultados)
 
 if len(res) == 0:
 
-    st.warning("Nenhum setup encontrado.")
-
-    st.stop()
-
-# =========================================================
-# FILTRO SCORE
-# =========================================================
-
-res = res[
-    res['Score'] >= score_min
-]
-
-if len(res) == 0:
-
     st.warning(
-        "Nenhum setup encontrado para o score."
+        "Nenhum pivô encontrado."
     )
 
     st.stop()
@@ -410,33 +485,32 @@ c5.metric(
 )
 
 # =========================================================
-# INTERPRETAÇÃO
+# SETUP ATUAL
 # =========================================================
 
-st.subheader("🧠 Interpretação")
+st.header("📌 Último Setup Detectado")
 
-if taxa >= 80:
-    st.success(
-        "Padrão historicamente muito forte."
-    )
+ultimo = res.iloc[-1]
 
-elif taxa >= 65:
-    st.info(
-        "Boa probabilidade histórica."
-    )
+st.write(f"""
+### Data:
+{ultimo['Data']}
 
-elif taxa >= 50:
-    st.warning(
-        "Probabilidade moderada."
-    )
+### Entrada:
+{ultimo['Entrada']}
 
-else:
-    st.error(
-        "Probabilidade historicamente fraca."
-    )
+### Score:
+{ultimo['Score']}
+
+### Probabilidade histórica:
+{taxa:.2f}%
+
+### Pior drawdown histórico:
+{pior_dd:.2f}%
+""")
 
 # =========================================================
-# GRÁFICO BTC
+# GRÁFICO
 # =========================================================
 
 fig = go.Figure()
@@ -458,7 +532,7 @@ fig.add_trace(
 )
 
 fig.update_layout(
-    height=650,
+    height=700,
     title="Bitcoin Diário"
 )
 
@@ -471,7 +545,7 @@ st.plotly_chart(
 # HISTÓRICO
 # =========================================================
 
-st.subheader("📋 Histórico dos Setups")
+st.header("📋 Histórico")
 
 st.dataframe(
     res.sort_values(
@@ -482,72 +556,25 @@ st.dataframe(
 )
 
 # =========================================================
-# SIMILARIDADE HISTÓRICA
-# =========================================================
-
-st.subheader("🧬 Top 10 padrões mais fortes")
-
-top = res.sort_values(
-    by=['Score', 'Pior_DD_%'],
-    ascending=[False, False]
-).head(10)
-
-st.dataframe(
-    top,
-    use_container_width=True
-)
-
-# =========================================================
-# STATUS ATUAL
-# =========================================================
-
-ultimo = df.iloc[-1]
-
-st.header("📌 Situação Atual")
-
-status = []
-
-if ultimo['Close'] > ultimo['EMA69']:
-    status.append("✅ Acima EMA69")
-else:
-    status.append("❌ Abaixo EMA69")
-
-if ultimo['DI+'] > ultimo['DI-']:
-    status.append("✅ DI+ acima DI-")
-else:
-    status.append("❌ DI+ abaixo DI-")
-
-if ultimo['ADX'] > adx_min:
-    status.append("✅ ADX forte")
-else:
-    status.append("❌ ADX fraco")
-
-for s in status:
-    st.write(s)
-
-# =========================================================
 # CONCLUSÃO
 # =========================================================
 
 st.header("📘 Conclusão Matemática")
 
 st.write(f"""
-Historicamente:
+O sistema encontrou:
 
-- o padrão 1-2-3 atingiu +{alvo}% em
-aproximadamente {taxa:.2f}% das vezes;
-
-- o tempo médio foi de
+- {total} padrões 1-2-3;
+- taxa histórica de gain:
+{taxa:.2f}%;
+- tempo médio:
 {dias_medio:.1f} dias;
+- pior drawdown:
+{pior_dd:.2f}%.
 
-- o pior drawdown histórico foi de
-{pior_dd:.2f}%;
+O modelo NÃO prevê o futuro.
 
-- o maior tempo preso em operação foi
-de {tempo_max} dias.
-
-O sistema NÃO prevê o futuro.
-
-Ele mede probabilidades históricas
-condicionais.
+Ele mede probabilidade histórica
+condicional baseada na estrutura
+do pivô 1-2-3.
 """)
