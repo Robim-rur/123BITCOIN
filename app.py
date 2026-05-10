@@ -8,10 +8,7 @@ import plotly.graph_objects as go
 # CONFIG
 # =========================================================
 
-st.set_page_config(
-    page_title="BTC Pullback Probabilístico",
-    layout="wide"
-)
+st.set_page_config(page_title="BTC 1-2-3 Híbrido", layout="wide")
 
 # =========================================================
 # SENHA
@@ -26,14 +23,14 @@ if not st.session_state.logado:
 
     st.title("🔐 Acesso Restrito")
 
-    senha = st.text_input("Digite a senha:", type="password")
+    senha = st.text_input("Senha:", type="password")
 
     if st.button("Entrar"):
         if senha == SENHA:
             st.session_state.logado = True
             st.rerun()
         else:
-            st.error("Senha incorreta.")
+            st.error("Senha incorreta")
 
     st.stop()
 
@@ -41,22 +38,22 @@ if not st.session_state.logado:
 # TÍTULO
 # =========================================================
 
-st.title("₿ BTC Pullback Continuation Probabilístico (EMA69)")
+st.title("₿ BTC 1-2-3 HÍBRIDO (Reversão + Continuação)")
 
 st.markdown("""
-Modelo focado em **continuação de tendência no Bitcoin**:
+Modelo híbrido:
 
-- tendência via EMA69
-- impulso + pullback + rompimento
-- probabilidade histórica de +3%
-- comportamento estatístico do BTC
+✔ 1-2-3 reversão (clássico)  
+✔ 1-2-3 continuação (BTC real)  
+✔ regime de tendência (EMA69)  
+✔ probabilidade de +3%
 """)
 
 # =========================================================
 # INPUTS
 # =========================================================
 
-col1, col2, col3 = st.columns(3)
+col1, col2 = st.columns(2)
 
 with col1:
     alvo = st.slider("Alvo (%)", 1.0, 10.0, 3.0, 0.5)
@@ -64,8 +61,7 @@ with col1:
 with col2:
     anos = st.slider("Histórico (anos)", 1, 15, 10)
 
-with col3:
-    lookback = st.slider("Lookback estrutura", 10, 80, 30)
+lookback = 25
 
 # =========================================================
 # DATA
@@ -73,102 +69,145 @@ with col3:
 
 @st.cache_data
 def load_data(periodo):
-    return yf.download(
-        "BTC-USD",
-        period=f"{periodo}y",
-        interval="1d",
-        auto_adjust=True
-    )
+    return yf.download("BTC-USD", period=f"{periodo}y", interval="1d", auto_adjust=True)
 
 df = load_data(anos)
 
 # =========================================================
-# INDICADOR BASE
+# INDICADORES
 # =========================================================
 
 df["EMA69"] = df["Close"].ewm(span=69, adjust=False).mean()
 
+df["ATR"] = (df["High"] - df["Low"]).rolling(14).mean()
+
 # =========================================================
-# ESTRUTURA DE MERCADO
+# REGIME DE MERCADO
 # =========================================================
 
-def is_uptrend(i):
+def trend_up(i):
     return df["Close"].iloc[i] > df["EMA69"].iloc[i]
 
-def highest_high(i1, i2):
-    return df["High"].iloc[i1:i2].max()
+# =========================================================
+# DETECÇÃO SWING SIMPLIFICADA (menos rígida)
+# =========================================================
 
-def lowest_low(i1, i2):
-    return df["Low"].iloc[i1:i2].min()
+def swing_low(i):
+    return df["Low"].iloc[i] == df["Low"].iloc[i-3:i+4].min()
+
+def swing_high(i):
+    return df["High"].iloc[i] == df["High"].iloc[i-3:i+4].max()
 
 # =========================================================
-# DETECÇÃO: PULLBACK CONTINUATION
+# DETECÇÃO HÍBRIDA 1-2-3
 # =========================================================
 
 resultados = []
 
-for i in range(lookback, len(df) - lookback):
+for i in range(lookback, len(df)-lookback):
 
     try:
 
-        # 1. TENDÊNCIA
-        if not is_uptrend(i):
-            continue
+        # =====================================================
+        # REGIME
+        # =====================================================
 
-        # 2. IMPULSO (últimos candles)
-        impulse_low = lowest_low(i - lookback, i)
-        impulse_high = highest_high(i - lookback, i)
+        bullish = trend_up(i)
 
-        impulse_size = (impulse_high - impulse_low) / impulse_low
+        # =====================================================
+        # 1-2-3 REVERSÃO (modo clássico)
+        # =====================================================
 
-        if impulse_size < 0.03:
-            continue
+        if not bullish:
 
-        # 3. PULLBACK (últimos candles)
-        pullback_low = lowest_low(i - 10, i)
-        pullback_retrace = (impulse_high - pullback_low) / impulse_high
+            if not swing_low(i):
+                continue
 
-        if pullback_retrace > 0.6:
-            continue
+            p1 = df.iloc[i]
 
-        # 4. ROMPIMENTO (continuação)
-        breakout_level = impulse_high
+            p2_idx = None
+            for j in range(i+1, i+10):
+                if swing_high(j):
+                    p2_idx = j
+                    break
 
-        entry_idx = None
+            if p2_idx is None:
+                continue
 
-        for j in range(i, min(i + 10, len(df))):
+            p2 = df.iloc[p2_idx]
 
-            if df["High"].iloc[j] > breakout_level:
-                entry_idx = j
-                break
+            p3_idx = None
+            for k in range(p2_idx+1, p2_idx+15):
+                if swing_low(k) and df.iloc[k]["Low"] > p1["Low"]:
+                    p3_idx = k
+                    break
 
-        if entry_idx is None:
-            continue
+            if p3_idx is None:
+                continue
 
-        entry_price = df["Close"].iloc[entry_idx]
+            entry_idx = None
+            for r in range(p3_idx+1, p3_idx+15):
+                if df.iloc[r]["High"] > p2["High"]:
+                    entry_idx = r
+                    break
 
-        # 5. FILTRO FINAL DE TENDÊNCIA
-        if entry_price < df["EMA69"].iloc[entry_idx]:
-            continue
+            if entry_idx is None:
+                continue
 
-        # =========================================================
+            entry = df.iloc[entry_idx]["Close"]
+
+        # =====================================================
+        # 1-2-3 CONTINUAÇÃO (BTC REAL)
+        # =====================================================
+
+        else:
+
+            impulse_high = df["High"].iloc[i-lookback:i].max()
+            impulse_low = df["Low"].iloc[i-lookback:i].min()
+
+            impulse = (impulse_high - impulse_low) / impulse_low
+
+            if impulse < 0.02:
+                continue
+
+            pullback = (impulse_high - df["Low"].iloc[i]) / impulse_high
+
+            if pullback > 0.75:
+                continue
+
+            entry_idx = None
+
+            for j in range(i, i+20):
+
+                if j >= len(df):
+                    break
+
+                if df.iloc[j]["High"] > impulse_high:
+                    entry_idx = j
+                    break
+
+            if entry_idx is None:
+                continue
+
+            entry = df.iloc[entry_idx]["Close"]
+
+        # =====================================================
         # BACKTEST +3%
-        # =========================================================
+        # =====================================================
 
-        target = entry_price * (1 + alvo / 100)
+        target = entry * (1 + alvo/100)
 
         win = False
-        days = 0
-        worst_dd = 0
+        dias = 0
+        dd = 0
 
-        for k in range(entry_idx + 1, len(df)):
+        for k in range(entry_idx+1, len(df)):
 
-            price = df["Close"].iloc[k]
+            price = df.iloc[k]["Close"]
 
-            dd = (price / entry_price - 1) * 100
-            worst_dd = min(worst_dd, dd)
+            dd = min(dd, (price/entry - 1)*100)
 
-            days += 1
+            dias += 1
 
             if price >= target:
                 win = True
@@ -176,12 +215,11 @@ for i in range(lookback, len(df) - lookback):
 
         resultados.append({
             "Data": df.index[entry_idx],
-            "Entrada": entry_price,
-            "Impulso%": round(impulse_size * 100, 2),
-            "Pullback%": round(pullback_retrace * 100, 2),
+            "Entrada": entry,
             "Gain": win,
-            "Dias": days,
-            "DD_%": round(worst_dd, 2)
+            "Dias": dias,
+            "DD_%": round(dd,2),
+            "Regime": "Trend" if bullish else "Reversal"
         })
 
     except:
@@ -194,7 +232,7 @@ for i in range(lookback, len(df) - lookback):
 res = pd.DataFrame(resultados)
 
 if len(res) == 0:
-    st.warning("Nenhum padrão de continuação encontrado.")
+    st.warning("Nenhum setup encontrado.")
     st.stop()
 
 # =========================================================
@@ -204,23 +242,21 @@ if len(res) == 0:
 total = len(res)
 wins = len(res[res["Gain"] == True])
 
-taxa = (wins / total) * 100
+taxa = (wins/total)*100
 
-dias_medios = res[res["Gain"] == True]["Dias"].mean()
-
-dd_min = res["DD_%"].min()
+dias_medios = res[res["Gain"]==True]["Dias"].mean()
 
 # =========================================================
 # DASHBOARD
 # =========================================================
 
-st.header("📊 Estatísticas do Modelo (BTC Continuation)")
+st.header("📊 Estatísticas Híbridas")
 
-c1, c2, c3 = st.columns(3)
+c1,c2,c3 = st.columns(3)
 
-c1.metric("Probabilidade de +3%", f"{taxa:.2f}%")
-c2.metric("Dias médios até alvo", f"{dias_medios:.1f}")
-c3.metric("Pior drawdown", f"{dd_min:.2f}%")
+c1.metric("Probabilidade +3%", f"{taxa:.2f}%")
+c2.metric("Dias médios", f"{dias_medios:.1f}")
+c3.metric("Total setups", total)
 
 # =========================================================
 # GRÁFICO
@@ -240,38 +276,27 @@ fig.add_trace(go.Scatter(
     name="EMA69"
 ))
 
-fig.update_layout(height=650, title="BTC Diário - Estrutura EMA69")
-
 st.plotly_chart(fig, use_container_width=True)
 
 # =========================================================
-# HISTÓRICO
+# TABELA
 # =========================================================
 
-st.header("📋 Operações Detectadas")
+st.header("📋 Operações")
 
-st.dataframe(
-    res.sort_values("Gain", ascending=False),
-    use_container_width=True
-)
+st.dataframe(res.sort_values("Gain", ascending=False), use_container_width=True)
 
 # =========================================================
 # CONCLUSÃO
 # =========================================================
 
-st.header("📘 Leitura Matemática")
+st.header("📘 Leitura do Modelo")
 
 st.write(f"""
-O modelo agora mede:
+Modelo híbrido:
 
-- tendência (EMA69)
-- impulso estatístico
-- pullback médio
-- rompimento de continuação
-- probabilidade histórica de atingir +{alvo}%
+- Reversão 1-2-3 tradicional em tendência de baixa
+- Continuação 1-2-3 em tendência de alta (BTC real)
 
-Taxa observada:
-**{taxa:.2f}%**
-
-Isso não prevê o futuro — mede comportamento recorrente do BTC em tendência.
+Taxa histórica: {taxa:.2f}%
 """)
