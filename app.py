@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 # =========================================================
 
 st.set_page_config(
-    page_title="BTC 1-2-3 Probabilístico",
+    page_title="BTC Pullback Probabilístico",
     layout="wide"
 )
 
@@ -26,17 +26,12 @@ if not st.session_state.logado:
 
     st.title("🔐 Acesso Restrito")
 
-    senha = st.text_input(
-        "Digite a senha:",
-        type="password"
-    )
+    senha = st.text_input("Digite a senha:", type="password")
 
     if st.button("Entrar"):
-
         if senha == SENHA:
             st.session_state.logado = True
             st.rerun()
-
         else:
             st.error("Senha incorreta.")
 
@@ -46,383 +41,160 @@ if not st.session_state.logado:
 # TÍTULO
 # =========================================================
 
-st.title("₿ Bitcoin 1-2-3 Probabilístico")
+st.title("₿ BTC Pullback Continuation Probabilístico (EMA69)")
 
 st.markdown("""
-Detector estrutural de pivô 1-2-3 no gráfico diário do Bitcoin.
+Modelo focado em **continuação de tendência no Bitcoin**:
 
-O sistema calcula:
-
-- probabilidade histórica;
-- tempo médio até o gain;
-- drawdown histórico;
-- score probabilístico;
-- qualidade estrutural do pivô.
+- tendência via EMA69
+- impulso + pullback + rompimento
+- probabilidade histórica de +3%
+- comportamento estatístico do BTC
 """)
 
 # =========================================================
 # INPUTS
 # =========================================================
 
-col1, col2, col3, col4 = st.columns(4)
+col1, col2, col3 = st.columns(3)
 
 with col1:
-    alvo = st.slider(
-        "Gain (%)",
-        min_value=1.0,
-        max_value=10.0,
-        value=3.0,
-        step=0.5
-    )
+    alvo = st.slider("Alvo (%)", 1.0, 10.0, 3.0, 0.5)
 
 with col2:
-    anos = st.slider(
-        "Histórico (anos)",
-        min_value=1,
-        max_value=15,
-        value=10
-    )
+    anos = st.slider("Histórico (anos)", 1, 15, 10)
 
 with col3:
-    adx_min = st.slider(
-        "ADX mínimo",
-        min_value=10,
-        max_value=40,
-        value=20
-    )
-
-with col4:
-    pivots = st.slider(
-        "Força do pivô",
-        min_value=2,
-        max_value=10,
-        value=3
-    )
+    lookback = st.slider("Lookback estrutura", 10, 80, 30)
 
 # =========================================================
-# DOWNLOAD
+# DATA
 # =========================================================
 
 @st.cache_data
 def load_data(periodo):
-
-    df = yf.download(
+    return yf.download(
         "BTC-USD",
         period=f"{periodo}y",
         interval="1d",
         auto_adjust=True
     )
 
-    return df
-
 df = load_data(anos)
 
 # =========================================================
-# INDICADORES
+# INDICADOR BASE
 # =========================================================
 
-def ema(series, period):
-    return series.ewm(span=period, adjust=False).mean()
-
-def calculate_dmi(data, period=14):
-
-    high = data['High']
-    low = data['Low']
-    close = data['Close']
-
-    plus_dm = high.diff()
-    minus_dm = low.diff() * -1
-
-    plus_dm[plus_dm < 0] = 0
-    minus_dm[minus_dm < 0] = 0
-
-    tr1 = high - low
-    tr2 = abs(high - close.shift())
-    tr3 = abs(low - close.shift())
-
-    tr = pd.concat(
-        [tr1, tr2, tr3],
-        axis=1
-    ).max(axis=1)
-
-    atr = tr.rolling(period).mean()
-
-    plus_di = (
-        100 *
-        (plus_dm.rolling(period).mean() / atr)
-    )
-
-    minus_di = (
-        100 *
-        (minus_dm.rolling(period).mean() / atr)
-    )
-
-    dx = (
-        abs(plus_di - minus_di)
-        / (plus_di + minus_di)
-    ) * 100
-
-    adx = dx.rolling(period).mean()
-
-    return plus_di, minus_di, adx
-
-def atr(df, period=14):
-
-    high_low = df['High'] - df['Low']
-    high_close = abs(df['High'] - df['Close'].shift())
-    low_close = abs(df['Low'] - df['Close'].shift())
-
-    ranges = pd.concat(
-        [high_low, high_close, low_close],
-        axis=1
-    )
-
-    true_range = ranges.max(axis=1)
-
-    return true_range.rolling(period).mean()
+df["EMA69"] = df["Close"].ewm(span=69, adjust=False).mean()
 
 # =========================================================
-# CALCULA INDICADORES
+# ESTRUTURA DE MERCADO
 # =========================================================
 
-df['EMA69'] = ema(df['Close'], 69)
+def is_uptrend(i):
+    return df["Close"].iloc[i] > df["EMA69"].iloc[i]
 
-plus_di, minus_di, adx = calculate_dmi(df)
+def highest_high(i1, i2):
+    return df["High"].iloc[i1:i2].max()
 
-df['DI+'] = plus_di
-df['DI-'] = minus_di
-df['ADX'] = adx
-df['ATR'] = atr(df)
-
-# =========================================================
-# SWINGS REAIS
-# =========================================================
-
-def swing_low(df, i, n=3):
-
-    return (
-        df['Low'].iloc[i]
-        == min(df['Low'].iloc[i-n:i+n+1])
-    )
-
-def swing_high(df, i, n=3):
-
-    return (
-        df['High'].iloc[i]
-        == max(df['High'].iloc[i-n:i+n+1])
-    )
+def lowest_low(i1, i2):
+    return df["Low"].iloc[i1:i2].min()
 
 # =========================================================
-# DETECÇÃO PIVÔ 1-2-3
+# DETECÇÃO: PULLBACK CONTINUATION
 # =========================================================
 
 resultados = []
 
-for i in range(30, len(df)-30):
+for i in range(lookback, len(df) - lookback):
 
     try:
 
-        # =========================================
-        # PROCURA PONTO 1
-        # =========================================
-
-        if not swing_low(df, i, pivots):
+        # 1. TENDÊNCIA
+        if not is_uptrend(i):
             continue
 
-        p1_idx = i
-        p1 = df.iloc[p1_idx]
+        # 2. IMPULSO (últimos candles)
+        impulse_low = lowest_low(i - lookback, i)
+        impulse_high = highest_high(i - lookback, i)
 
-        # =========================================
-        # PROCURA PONTO 2
-        # =========================================
+        impulse_size = (impulse_high - impulse_low) / impulse_low
 
-        p2_idx = None
+        if impulse_size < 0.03:
+            continue
 
-        for j in range(
-            p1_idx + 1,
-            p1_idx + 15
-        ):
+        # 3. PULLBACK (últimos candles)
+        pullback_low = lowest_low(i - 10, i)
+        pullback_retrace = (impulse_high - pullback_low) / impulse_high
 
-            if swing_high(df, j, pivots):
+        if pullback_retrace > 0.6:
+            continue
 
-                p2_idx = j
+        # 4. ROMPIMENTO (continuação)
+        breakout_level = impulse_high
+
+        entry_idx = None
+
+        for j in range(i, min(i + 10, len(df))):
+
+            if df["High"].iloc[j] > breakout_level:
+                entry_idx = j
                 break
 
-        if p2_idx is None:
+        if entry_idx is None:
             continue
 
-        p2 = df.iloc[p2_idx]
+        entry_price = df["Close"].iloc[entry_idx]
 
-        # =========================================
-        # PROCURA PONTO 3
-        # =========================================
-
-        p3_idx = None
-
-        for k in range(
-            p2_idx + 1,
-            p2_idx + 15
-        ):
-
-            if swing_low(df, k, pivots):
-
-                if (
-                    df.iloc[k]['Low']
-                    > p1['Low']
-                ):
-
-                    p3_idx = k
-                    break
-
-        if p3_idx is None:
+        # 5. FILTRO FINAL DE TENDÊNCIA
+        if entry_price < df["EMA69"].iloc[entry_idx]:
             continue
 
-        p3 = df.iloc[p3_idx]
+        # =========================================================
+        # BACKTEST +3%
+        # =========================================================
 
-        # =========================================
-        # ROMPIMENTO
-        # =========================================
+        target = entry_price * (1 + alvo / 100)
 
-        rompimento_idx = None
+        win = False
+        days = 0
+        worst_dd = 0
 
-        for r in range(
-            p3_idx + 1,
-            min(p3_idx + 15, len(df))
-        ):
+        for k in range(entry_idx + 1, len(df)):
 
-            if (
-                df.iloc[r]['High']
-                > p2['High']
-            ):
+            price = df["Close"].iloc[k]
 
-                rompimento_idx = r
-                break
+            dd = (price / entry_price - 1) * 100
+            worst_dd = min(worst_dd, dd)
 
-        if rompimento_idx is None:
-            continue
+            days += 1
 
-        entrada = df.iloc[rompimento_idx]['Close']
-
-        # =========================================
-        # FILTROS
-        # =========================================
-
-        if entrada < p3['EMA69']:
-            continue
-
-        if p3['DI+'] < p3['DI-']:
-            continue
-
-        if p3['ADX'] < adx_min:
-            continue
-
-        # =========================================
-        # SCORE
-        # =========================================
-
-        score = 0
-
-        # candle força
-        candle_range = (
-            (p3['High'] - p3['Low'])
-            / p3['Close']
-        ) * 100
-
-        if candle_range > 2:
-            score += 20
-
-        # distância EMA
-        dist_ema = (
-            (p3['Close'] - p3['EMA69'])
-            / p3['EMA69']
-        ) * 100
-
-        if dist_ema < 8:
-            score += 20
-
-        # adx
-        if p3['ADX'] > 25:
-            score += 20
-
-        # dmi
-        if p3['DI+'] > p3['DI-']:
-            score += 20
-
-        # atr
-        atr_perc = (
-            p3['ATR']
-            / p3['Close']
-        ) * 100
-
-        if atr_perc < 5:
-            score += 20
-
-        # =========================================
-        # BACKTEST
-        # =========================================
-
-        alvo_preco = (
-            entrada *
-            (1 + alvo/100)
-        )
-
-        gain = False
-        dias = 0
-        pior_dd = 0
-
-        for z in range(
-            rompimento_idx + 1,
-            len(df)
-        ):
-
-            preco = df.iloc[z]['Close']
-
-            dd = (
-                (preco / entrada) - 1
-            ) * 100
-
-            if dd < pior_dd:
-                pior_dd = dd
-
-            dias += 1
-
-            if preco >= alvo_preco:
-
-                gain = True
+            if price >= target:
+                win = True
                 break
 
         resultados.append({
-
-            'Data': df.index[rompimento_idx],
-            'Entrada': round(entrada, 2),
-            'P1': round(p1['Low'], 2),
-            'P2': round(p2['High'], 2),
-            'P3': round(p3['Low'], 2),
-            'Score': score,
-            'Gain': gain,
-            'Dias': dias,
-            'Pior_DD_%': round(pior_dd, 2),
-            'ADX': round(p3['ADX'], 2),
-            'ATR_%': round(atr_perc, 2),
-            'Dist_EMA_%': round(dist_ema, 2)
-
+            "Data": df.index[entry_idx],
+            "Entrada": entry_price,
+            "Impulso%": round(impulse_size * 100, 2),
+            "Pullback%": round(pullback_retrace * 100, 2),
+            "Gain": win,
+            "Dias": days,
+            "DD_%": round(worst_dd, 2)
         })
 
     except:
         pass
 
 # =========================================================
-# DATAFRAME
+# RESULTADOS
 # =========================================================
 
 res = pd.DataFrame(resultados)
 
 if len(res) == 0:
-
-    st.warning(
-        "Nenhum pivô encontrado."
-    )
-
+    st.warning("Nenhum padrão de continuação encontrado.")
     st.stop()
 
 # =========================================================
@@ -430,84 +202,25 @@ if len(res) == 0:
 # =========================================================
 
 total = len(res)
+wins = len(res[res["Gain"] == True])
 
-wins = len(
-    res[res['Gain'] == True]
-)
+taxa = (wins / total) * 100
 
-taxa = (
-    wins / total
-) * 100
+dias_medios = res[res["Gain"] == True]["Dias"].mean()
 
-dias_medio = (
-    res[
-        res['Gain'] == True
-    ]['Dias'].mean()
-)
-
-pior_dd = res['Pior_DD_%'].min()
-
-tempo_max = res['Dias'].max()
-
-score_medio = res['Score'].mean()
+dd_min = res["DD_%"].min()
 
 # =========================================================
 # DASHBOARD
 # =========================================================
 
-st.header("📊 Estatísticas")
+st.header("📊 Estatísticas do Modelo (BTC Continuation)")
 
-c1, c2, c3, c4, c5 = st.columns(5)
+c1, c2, c3 = st.columns(3)
 
-c1.metric(
-    "Probabilidade",
-    f"{taxa:.2f}%"
-)
-
-c2.metric(
-    "Dias Médios",
-    f"{dias_medio:.1f}"
-)
-
-c3.metric(
-    "Pior Drawdown",
-    f"{pior_dd:.2f}%"
-)
-
-c4.metric(
-    "Maior Tempo",
-    f"{tempo_max} dias"
-)
-
-c5.metric(
-    "Score Médio",
-    f"{score_medio:.1f}"
-)
-
-# =========================================================
-# SETUP ATUAL
-# =========================================================
-
-st.header("📌 Último Setup Detectado")
-
-ultimo = res.iloc[-1]
-
-st.write(f"""
-### Data:
-{ultimo['Data']}
-
-### Entrada:
-{ultimo['Entrada']}
-
-### Score:
-{ultimo['Score']}
-
-### Probabilidade histórica:
-{taxa:.2f}%
-
-### Pior drawdown histórico:
-{pior_dd:.2f}%
-""")
+c1.metric("Probabilidade de +3%", f"{taxa:.2f}%")
+c2.metric("Dias médios até alvo", f"{dias_medios:.1f}")
+c3.metric("Pior drawdown", f"{dd_min:.2f}%")
 
 # =========================================================
 # GRÁFICO
@@ -515,43 +228,30 @@ st.write(f"""
 
 fig = go.Figure()
 
-fig.add_trace(
-    go.Scatter(
-        x=df.index,
-        y=df['Close'],
-        name='BTC'
-    )
-)
+fig.add_trace(go.Scatter(
+    x=df.index,
+    y=df["Close"],
+    name="BTC"
+))
 
-fig.add_trace(
-    go.Scatter(
-        x=df.index,
-        y=df['EMA69'],
-        name='EMA69'
-    )
-)
+fig.add_trace(go.Scatter(
+    x=df.index,
+    y=df["EMA69"],
+    name="EMA69"
+))
 
-fig.update_layout(
-    height=700,
-    title="Bitcoin Diário"
-)
+fig.update_layout(height=650, title="BTC Diário - Estrutura EMA69")
 
-st.plotly_chart(
-    fig,
-    use_container_width=True
-)
+st.plotly_chart(fig, use_container_width=True)
 
 # =========================================================
 # HISTÓRICO
 # =========================================================
 
-st.header("📋 Histórico")
+st.header("📋 Operações Detectadas")
 
 st.dataframe(
-    res.sort_values(
-        by='Score',
-        ascending=False
-    ).reset_index(drop=True),
+    res.sort_values("Gain", ascending=False),
     use_container_width=True
 )
 
@@ -559,22 +259,19 @@ st.dataframe(
 # CONCLUSÃO
 # =========================================================
 
-st.header("📘 Conclusão Matemática")
+st.header("📘 Leitura Matemática")
 
 st.write(f"""
-O sistema encontrou:
+O modelo agora mede:
 
-- {total} padrões 1-2-3;
-- taxa histórica de gain:
-{taxa:.2f}%;
-- tempo médio:
-{dias_medio:.1f} dias;
-- pior drawdown:
-{pior_dd:.2f}%.
+- tendência (EMA69)
+- impulso estatístico
+- pullback médio
+- rompimento de continuação
+- probabilidade histórica de atingir +{alvo}%
 
-O modelo NÃO prevê o futuro.
+Taxa observada:
+**{taxa:.2f}%**
 
-Ele mede probabilidade histórica
-condicional baseada na estrutura
-do pivô 1-2-3.
+Isso não prevê o futuro — mede comportamento recorrente do BTC em tendência.
 """)
