@@ -8,7 +8,10 @@ import plotly.graph_objects as go
 # CONFIG
 # =========================================================
 
-st.set_page_config(page_title="BTC Probabilístico Regime", layout="wide")
+st.set_page_config(
+    page_title="BTC Probabilístico Calibrado",
+    layout="wide"
+)
 
 # =========================================================
 # SENHA
@@ -38,16 +41,16 @@ if not st.session_state.logado:
 # TÍTULO
 # =========================================================
 
-st.title("₿ BTC Probabilístico (Sem Sequência Fixa)")
+st.title("₿ BTC Probabilístico Calibrado (FUNCIONAL)")
 
 st.markdown("""
-Modelo baseado em **probabilidade de continuação em tendência**, não em padrões fixos.
+Modelo ajustado para:
 
-✔ regime de mercado  
-✔ força da tendência  
-✔ compressão/expansão  
-✔ breakout estatístico  
-✔ probabilidade de +3%
+✔ detectar setups reais do BTC  
+✔ evitar excesso de filtro  
+✔ usar score normalizado  
+✔ capturar continuação e reversão  
+✔ foco em +3%
 """)
 
 # =========================================================
@@ -70,107 +73,100 @@ lookback = 30
 
 @st.cache_data
 def load_data(periodo):
-    return yf.download("BTC-USD", period=f"{periodo}y", interval="1d", auto_adjust=True)
+    return yf.download(
+        "BTC-USD",
+        period=f"{periodo}y",
+        interval="1d",
+        auto_adjust=True
+    )
 
 df = load_data(anos)
 
 # =========================================================
-# INDICADORES BASE
+# INDICADORES
 # =========================================================
 
 df["EMA69"] = df["Close"].ewm(span=69, adjust=False).mean()
-
-df["ATR"] = (df["High"] - df["Low"]).rolling(14).mean()
 
 df["RET"] = df["Close"].pct_change()
 
 df["VOL"] = df["RET"].rolling(14).std()
 
+df["ATR"] = (df["High"] - df["Low"]).rolling(14).mean()
+
 # =========================================================
-# REGIME DE TENDÊNCIA
+# FUNÇÕES DE CONTEXTO
 # =========================================================
 
-def trend_score(i):
-
+def trend(i):
     if i < 70:
-        return 0
+        return False
+    return df["Close"].iloc[i] > df["EMA69"].iloc[i]
 
-    above_ema = df["Close"].iloc[i] > df["EMA69"].iloc[i]
+def slope(i):
+    return df["EMA69"].iloc[i] - df["EMA69"].iloc[i-5]
 
-    ema_slope = df["EMA69"].iloc[i] - df["EMA69"].iloc[i-5]
-
-    vol = df["VOL"].iloc[i]
-
-    score = 0
-
-    if above_ema:
-        score += 40
-
-    if ema_slope > 0:
-        score += 20
-
-    if vol > df["VOL"].mean():
-        score += 20
-
-    return score
-
-# =========================================================
-# FORÇA DE EXPANSÃO
-# =========================================================
-
-def expansion_score(i):
+def expansion(i):
 
     high = df["High"].iloc[i-lookback:i].max()
     low = df["Low"].iloc[i-lookback:i].min()
 
-    move = (high - low) / low
+    return (high - low) / low
 
-    if move > 0.05:
-        return 30
-    elif move > 0.03:
-        return 20
-    elif move > 0.015:
-        return 10
-
-    return 0
-
-# =========================================================
-# COMPRESSÃO / PULLBACK (flexível)
-# =========================================================
-
-def pullback_score(i):
+def pullback(i):
 
     high = df["High"].iloc[i-lookback:i].max()
 
-    retrace = (high - df["Low"].iloc[i]) / high
+    return (high - df["Low"].iloc[i]) / high
 
-    if retrace < 0.2:
-        return 30
-    elif retrace < 0.35:
-        return 20
-    elif retrace < 0.5:
-        return 10
-
-    return 5
-
-# =========================================================
-# BREAKOUT PROBABILÍSTICO (SEM JANELA FIXA)
-# =========================================================
-
-def breakout_score(i):
+def breakout(i):
 
     recent_high = df["High"].iloc[i-lookback:i].max()
 
-    if df["Close"].iloc[i] > recent_high:
-        return 40
-
-    if df["High"].iloc[i] > recent_high * 0.98:
-        return 20
-
-    return 0
+    return df["High"].iloc[i] >= recent_high * 0.995
 
 # =========================================================
-# BACKTEST PROBABILÍSTICO
+# SCORE NORMALIZADO (0–100)
+# =========================================================
+
+def score(i):
+
+    s = 0
+
+    # tendência
+    if trend(i):
+        s += 35
+
+    # inclinação EMA
+    if slope(i) > 0:
+        s += 15
+
+    # expansão
+    exp = expansion(i)
+    if exp > 0.05:
+        s += 20
+    elif exp > 0.03:
+        s += 12
+    elif exp > 0.015:
+        s += 6
+
+    # pullback saudável
+    pb = pullback(i)
+    if pb < 0.2:
+        s += 20
+    elif pb < 0.35:
+        s += 12
+    elif pb < 0.5:
+        s += 6
+
+    # breakout leve (wick incluído)
+    if breakout(i):
+        s += 10
+
+    return s
+
+# =========================================================
+# DETECÇÃO
 # =========================================================
 
 resultados = []
@@ -179,15 +175,13 @@ for i in range(lookback, len(df)-5):
 
     try:
 
-        ts = trend_score(i)
-        ex = expansion_score(i)
-        ps = pullback_score(i)
-        bs = breakout_score(i)
+        sc = score(i)
 
-        total_score = ts + ex + ps + bs
+        # =====================================================
+        # CALIBRAÇÃO (IMPORTANTE)
+        # =====================================================
 
-        # FILTRO MÍNIMO DE CONTEXTO
-        if total_score < 70:
+        if sc < 35:
             continue
 
         entry = df["Close"].iloc[i]
@@ -195,7 +189,7 @@ for i in range(lookback, len(df)-5):
         target = entry * (1 + alvo/100)
 
         win = False
-        days = 0
+        dias = 0
         dd = 0
 
         for k in range(i+1, len(df)):
@@ -204,7 +198,7 @@ for i in range(lookback, len(df)-5):
 
             dd = min(dd, (price/entry - 1)*100)
 
-            days += 1
+            dias += 1
 
             if price >= target:
                 win = True
@@ -213,10 +207,10 @@ for i in range(lookback, len(df)-5):
         resultados.append({
             "Data": df.index[i],
             "Entrada": entry,
-            "Score": total_score,
+            "Score": sc,
             "Gain": win,
-            "Dias": days,
-            "DD_%": round(dd,2)
+            "Dias": dias,
+            "DD_%": round(dd, 2)
         })
 
     except:
@@ -229,7 +223,7 @@ for i in range(lookback, len(df)-5):
 res = pd.DataFrame(resultados)
 
 if len(res) == 0:
-    st.warning("Nenhum setup probabilístico encontrado.")
+    st.warning("Nenhum setup detectado (ainda).")
     st.stop()
 
 # =========================================================
@@ -247,13 +241,13 @@ dias_medios = res[res["Gain"] == True]["Dias"].mean()
 # DASHBOARD
 # =========================================================
 
-st.header("📊 Modelo Probabilístico BTC")
+st.header("📊 Estatísticas BTC")
 
 c1,c2,c3 = st.columns(3)
 
 c1.metric("Probabilidade +3%", f"{taxa:.2f}%")
 c2.metric("Dias médios", f"{dias_medios:.1f}")
-c3.metric("Total setups", total)
+c3.metric("Setups", total)
 
 # =========================================================
 # GRÁFICO
@@ -279,7 +273,7 @@ st.plotly_chart(fig, use_container_width=True)
 # TABELA
 # =========================================================
 
-st.header("📋 Setups Detectados")
+st.header("📋 Setups detectados")
 
 st.dataframe(res.sort_values("Score", ascending=False), use_container_width=True)
 
@@ -290,12 +284,11 @@ st.dataframe(res.sort_values("Score", ascending=False), use_container_width=True
 st.header("📘 Leitura do Modelo")
 
 st.write(f"""
-Modelo sem sequência fixa:
+Modelo calibrado com score probabilístico.
 
-- tendência (EMA69)
-- expansão de volatilidade
-- pullback probabilístico
-- breakout estatístico
+- não usa sequência fixa
+- detecta contexto de tendência
+- captura pullbacks e rompimentos leves
 
 Taxa histórica: {taxa:.2f}%
 """)
