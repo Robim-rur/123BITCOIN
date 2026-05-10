@@ -8,7 +8,7 @@ import plotly.graph_objects as go
 # CONFIG
 # =========================================================
 
-st.set_page_config(page_title="BTC 1-2-3 Híbrido", layout="wide")
+st.set_page_config(page_title="BTC Probabilístico Regime", layout="wide")
 
 # =========================================================
 # SENHA
@@ -38,14 +38,15 @@ if not st.session_state.logado:
 # TÍTULO
 # =========================================================
 
-st.title("₿ BTC 1-2-3 HÍBRIDO (Reversão + Continuação)")
+st.title("₿ BTC Probabilístico (Sem Sequência Fixa)")
 
 st.markdown("""
-Modelo híbrido:
+Modelo baseado em **probabilidade de continuação em tendência**, não em padrões fixos.
 
-✔ 1-2-3 reversão (clássico)  
-✔ 1-2-3 continuação (BTC real)  
-✔ regime de tendência (EMA69)  
+✔ regime de mercado  
+✔ força da tendência  
+✔ compressão/expansão  
+✔ breakout estatístico  
 ✔ probabilidade de +3%
 """)
 
@@ -61,7 +62,7 @@ with col1:
 with col2:
     anos = st.slider("Histórico (anos)", 1, 15, 10)
 
-lookback = 25
+lookback = 30
 
 # =========================================================
 # DATA
@@ -74,152 +75,148 @@ def load_data(periodo):
 df = load_data(anos)
 
 # =========================================================
-# INDICADORES
+# INDICADORES BASE
 # =========================================================
 
 df["EMA69"] = df["Close"].ewm(span=69, adjust=False).mean()
 
 df["ATR"] = (df["High"] - df["Low"]).rolling(14).mean()
 
-# =========================================================
-# REGIME DE MERCADO
-# =========================================================
+df["RET"] = df["Close"].pct_change()
 
-def trend_up(i):
-    return df["Close"].iloc[i] > df["EMA69"].iloc[i]
+df["VOL"] = df["RET"].rolling(14).std()
 
 # =========================================================
-# DETECÇÃO SWING SIMPLIFICADA (menos rígida)
+# REGIME DE TENDÊNCIA
 # =========================================================
 
-def swing_low(i):
-    return df["Low"].iloc[i] == df["Low"].iloc[i-3:i+4].min()
+def trend_score(i):
 
-def swing_high(i):
-    return df["High"].iloc[i] == df["High"].iloc[i-3:i+4].max()
+    if i < 70:
+        return 0
+
+    above_ema = df["Close"].iloc[i] > df["EMA69"].iloc[i]
+
+    ema_slope = df["EMA69"].iloc[i] - df["EMA69"].iloc[i-5]
+
+    vol = df["VOL"].iloc[i]
+
+    score = 0
+
+    if above_ema:
+        score += 40
+
+    if ema_slope > 0:
+        score += 20
+
+    if vol > df["VOL"].mean():
+        score += 20
+
+    return score
 
 # =========================================================
-# DETECÇÃO HÍBRIDA 1-2-3
+# FORÇA DE EXPANSÃO
+# =========================================================
+
+def expansion_score(i):
+
+    high = df["High"].iloc[i-lookback:i].max()
+    low = df["Low"].iloc[i-lookback:i].min()
+
+    move = (high - low) / low
+
+    if move > 0.05:
+        return 30
+    elif move > 0.03:
+        return 20
+    elif move > 0.015:
+        return 10
+
+    return 0
+
+# =========================================================
+# COMPRESSÃO / PULLBACK (flexível)
+# =========================================================
+
+def pullback_score(i):
+
+    high = df["High"].iloc[i-lookback:i].max()
+
+    retrace = (high - df["Low"].iloc[i]) / high
+
+    if retrace < 0.2:
+        return 30
+    elif retrace < 0.35:
+        return 20
+    elif retrace < 0.5:
+        return 10
+
+    return 5
+
+# =========================================================
+# BREAKOUT PROBABILÍSTICO (SEM JANELA FIXA)
+# =========================================================
+
+def breakout_score(i):
+
+    recent_high = df["High"].iloc[i-lookback:i].max()
+
+    if df["Close"].iloc[i] > recent_high:
+        return 40
+
+    if df["High"].iloc[i] > recent_high * 0.98:
+        return 20
+
+    return 0
+
+# =========================================================
+# BACKTEST PROBABILÍSTICO
 # =========================================================
 
 resultados = []
 
-for i in range(lookback, len(df)-lookback):
+for i in range(lookback, len(df)-5):
 
     try:
 
-        # =====================================================
-        # REGIME
-        # =====================================================
+        ts = trend_score(i)
+        ex = expansion_score(i)
+        ps = pullback_score(i)
+        bs = breakout_score(i)
 
-        bullish = trend_up(i)
+        total_score = ts + ex + ps + bs
 
-        # =====================================================
-        # 1-2-3 REVERSÃO (modo clássico)
-        # =====================================================
+        # FILTRO MÍNIMO DE CONTEXTO
+        if total_score < 70:
+            continue
 
-        if not bullish:
-
-            if not swing_low(i):
-                continue
-
-            p1 = df.iloc[i]
-
-            p2_idx = None
-            for j in range(i+1, i+10):
-                if swing_high(j):
-                    p2_idx = j
-                    break
-
-            if p2_idx is None:
-                continue
-
-            p2 = df.iloc[p2_idx]
-
-            p3_idx = None
-            for k in range(p2_idx+1, p2_idx+15):
-                if swing_low(k) and df.iloc[k]["Low"] > p1["Low"]:
-                    p3_idx = k
-                    break
-
-            if p3_idx is None:
-                continue
-
-            entry_idx = None
-            for r in range(p3_idx+1, p3_idx+15):
-                if df.iloc[r]["High"] > p2["High"]:
-                    entry_idx = r
-                    break
-
-            if entry_idx is None:
-                continue
-
-            entry = df.iloc[entry_idx]["Close"]
-
-        # =====================================================
-        # 1-2-3 CONTINUAÇÃO (BTC REAL)
-        # =====================================================
-
-        else:
-
-            impulse_high = df["High"].iloc[i-lookback:i].max()
-            impulse_low = df["Low"].iloc[i-lookback:i].min()
-
-            impulse = (impulse_high - impulse_low) / impulse_low
-
-            if impulse < 0.02:
-                continue
-
-            pullback = (impulse_high - df["Low"].iloc[i]) / impulse_high
-
-            if pullback > 0.75:
-                continue
-
-            entry_idx = None
-
-            for j in range(i, i+20):
-
-                if j >= len(df):
-                    break
-
-                if df.iloc[j]["High"] > impulse_high:
-                    entry_idx = j
-                    break
-
-            if entry_idx is None:
-                continue
-
-            entry = df.iloc[entry_idx]["Close"]
-
-        # =====================================================
-        # BACKTEST +3%
-        # =====================================================
+        entry = df["Close"].iloc[i]
 
         target = entry * (1 + alvo/100)
 
         win = False
-        dias = 0
+        days = 0
         dd = 0
 
-        for k in range(entry_idx+1, len(df)):
+        for k in range(i+1, len(df)):
 
-            price = df.iloc[k]["Close"]
+            price = df["Close"].iloc[k]
 
             dd = min(dd, (price/entry - 1)*100)
 
-            dias += 1
+            days += 1
 
             if price >= target:
                 win = True
                 break
 
         resultados.append({
-            "Data": df.index[entry_idx],
+            "Data": df.index[i],
             "Entrada": entry,
+            "Score": total_score,
             "Gain": win,
-            "Dias": dias,
-            "DD_%": round(dd,2),
-            "Regime": "Trend" if bullish else "Reversal"
+            "Dias": days,
+            "DD_%": round(dd,2)
         })
 
     except:
@@ -232,7 +229,7 @@ for i in range(lookback, len(df)-lookback):
 res = pd.DataFrame(resultados)
 
 if len(res) == 0:
-    st.warning("Nenhum setup encontrado.")
+    st.warning("Nenhum setup probabilístico encontrado.")
     st.stop()
 
 # =========================================================
@@ -242,15 +239,15 @@ if len(res) == 0:
 total = len(res)
 wins = len(res[res["Gain"] == True])
 
-taxa = (wins/total)*100
+taxa = (wins / total) * 100
 
-dias_medios = res[res["Gain"]==True]["Dias"].mean()
+dias_medios = res[res["Gain"] == True]["Dias"].mean()
 
 # =========================================================
 # DASHBOARD
 # =========================================================
 
-st.header("📊 Estatísticas Híbridas")
+st.header("📊 Modelo Probabilístico BTC")
 
 c1,c2,c3 = st.columns(3)
 
@@ -282,9 +279,9 @@ st.plotly_chart(fig, use_container_width=True)
 # TABELA
 # =========================================================
 
-st.header("📋 Operações")
+st.header("📋 Setups Detectados")
 
-st.dataframe(res.sort_values("Gain", ascending=False), use_container_width=True)
+st.dataframe(res.sort_values("Score", ascending=False), use_container_width=True)
 
 # =========================================================
 # CONCLUSÃO
@@ -293,10 +290,12 @@ st.dataframe(res.sort_values("Gain", ascending=False), use_container_width=True)
 st.header("📘 Leitura do Modelo")
 
 st.write(f"""
-Modelo híbrido:
+Modelo sem sequência fixa:
 
-- Reversão 1-2-3 tradicional em tendência de baixa
-- Continuação 1-2-3 em tendência de alta (BTC real)
+- tendência (EMA69)
+- expansão de volatilidade
+- pullback probabilístico
+- breakout estatístico
 
 Taxa histórica: {taxa:.2f}%
 """)
